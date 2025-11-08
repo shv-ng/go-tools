@@ -1,10 +1,10 @@
 package main
 
 import (
-	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"io/fs"
 	"os"
@@ -15,6 +15,11 @@ import (
 
 	"golang.org/x/sync/errgroup"
 )
+
+type safeSlice struct {
+	mu    sync.Mutex
+	paths []string
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -39,31 +44,59 @@ func run() error {
 		root = flag.Arg(0)
 	}
 
-	g := new(errgroup.Group)
-	ch := make(chan string)
 	var ops, sz atomic.Uint64
-	var m sync.Map
+	var sizeMap sync.Map
 
-	walk(root, ch, g, &ops, &sz)
-	hashify(ch, g, &m)
+	g := new(errgroup.Group)
+	g.Go(func() error {
+		return walk(root, &sizeMap, &ops, &sz)
+	})
 
 	if err := g.Wait(); err != nil {
 		return err
 	}
 
+	var hashMap sync.Map
+	g2 := new(errgroup.Group)
+	g2.SetLimit(30)
+
+	sizeMap.Range(func(key, value any) bool {
+		ss := value.(*safeSlice)
+
+		ss.mu.Lock()
+		paths := make([]string, len(ss.paths))
+		copy(paths, ss.paths)
+		ss.mu.Unlock()
+		if len(paths) <= 1 {
+			return true
+		}
+		for _, p := range paths {
+			g2.Go(func() error {
+				return hashify(p, &hashMap)
+			})
+		}
+		return true
+	})
+
+	if err := g2.Wait(); err != nil {
+		return err
+	}
+
+	dupcnt := 0
 	foundAny := false
-	m.Range(func(key, value any) bool {
-		paths, ok := value.(*[]string)
-		if !ok || len(*paths) <= 1 {
+	hashMap.Range(func(key, value any) bool {
+		ss, ok := value.(*safeSlice)
+		if !ok || len(ss.paths) <= 1 {
 			return true
 		}
 
+		dupcnt++
 		if !foundAny {
 			fmt.Println("Duplicate files found:")
 			foundAny = true
 		}
 		fmt.Printf("\nHash: %s\n", key)
-		for _, p := range *paths {
+		for _, p := range ss.paths {
 			fmt.Printf("  %s\n", p)
 		}
 		return true
@@ -75,13 +108,14 @@ func run() error {
 
 	mb := sz.Load() / 1024 / 1024
 	kb := sz.Load()/1024 - mb*1024
-	fmt.Printf("\nFile scanned: %d\n", ops.Load())
+	fmt.Println("Duplicate files:", dupcnt)
+	fmt.Printf("File scanned: %d\n", ops.Load())
 	fmt.Printf("Total files size sum: %d.%d MB\n", mb, kb)
 	fmt.Printf("Time taken: %v\n", time.Since(start))
 	return nil
 }
 
-func walk(root string, ch chan<- string, g *errgroup.Group, ops, sz *atomic.Uint64) {
+func walk(root string, m *sync.Map, ops, sz *atomic.Uint64) error {
 	// it could be via config, but i am kinda lazy
 	ignoreDirs := map[string]bool{
 		".git":         true,
@@ -104,54 +138,57 @@ func walk(root string, ch chan<- string, g *errgroup.Group, ops, sz *atomic.Uint
 		"dist":         true,
 		"vendor":       true,
 	}
-	g.Go(func() error {
-		defer close(ch)
-		return filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
-			if err != nil {
-				return err
+	return filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if ignoreDirs[info.Name()] {
+				return filepath.SkipDir
 			}
-			if info.IsDir() {
-				if ignoreDirs[info.Name()] {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if info.Mode()&fs.ModeSymlink != 0 {
-				return nil
-			}
-			if info.Size() == 0 {
-				return nil
-			}
-			ops.Add(1)
-			sz.Add(uint64(info.Size()))
-			ch <- path
 			return nil
-		})
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if info.Size() == 0 {
+			return nil
+		}
+		ops.Add(1)
+		sz.Add(uint64(info.Size()))
+
+		actual, _ := m.LoadOrStore(info.Size(), &safeSlice{})
+		ss := actual.(*safeSlice)
+
+		ss.mu.Lock()
+		ss.paths = append(ss.paths, path)
+		ss.mu.Unlock()
+
+		return nil
 	})
 }
 
-func hashify(ch <-chan string, g *errgroup.Group, m *sync.Map) {
-	for path := range ch {
-		g.Go(func() error {
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-
-			hasher := sha256.New()
-			if _, err := io.Copy(hasher, file); err != nil {
-				file.Close()
-				return err
-			}
-			file.Close()
-
-			hash := fmt.Sprintf("%x", hasher.Sum(nil))
-
-			actual, _ := m.LoadOrStore(hash, &[]string{})
-			paths := actual.(*[]string)
-			*paths = append(*paths, path)
-
-			return nil
-		})
+func hashify(path string, m *sync.Map) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
 	}
+
+	hasher := fnv.New64a()
+	if _, err := io.Copy(hasher, file); err != nil {
+		file.Close()
+		return err
+	}
+	file.Close()
+
+	hash := fmt.Sprintf("%x", hasher.Sum(nil))
+
+	actual, _ := m.LoadOrStore(hash, &safeSlice{})
+	ss := actual.(*safeSlice)
+
+	ss.mu.Lock()
+	ss.paths = append(ss.paths, path)
+	ss.mu.Unlock()
+
+	return nil
 }
