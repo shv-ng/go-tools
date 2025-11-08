@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -29,7 +28,6 @@ func main() {
 }
 
 func run() error {
-	start := time.Now()
 	flag.Parse()
 	if len(flag.Args()) > 1 {
 		return errors.New("Usage:\n deduplication [path]\t\tdefault .")
@@ -81,62 +79,61 @@ func run() error {
 	if err := g2.Wait(); err != nil {
 		return err
 	}
-
-	dupcnt := 0
-	foundAny := false
-	hashMap.Range(func(key, value any) bool {
-		ss, ok := value.(*safeSlice)
-		if !ok || len(ss.paths) <= 1 {
-			return true
-		}
-
-		dupcnt++
-		if !foundAny {
-			fmt.Println("Duplicate files found:")
-			foundAny = true
-		}
-		fmt.Printf("\nHash: %s\n", key)
-		for _, p := range ss.paths {
-			fmt.Printf("  %s\n", p)
-		}
-		return true
-	})
-
-	if !foundAny {
-		fmt.Println("All files are unique")
-	}
-
-	mb := sz.Load() / 1024 / 1024
-	kb := sz.Load()/1024 - mb*1024
-	fmt.Println("Duplicate files:", dupcnt)
-	fmt.Printf("File scanned: %d\n", ops.Load())
-	fmt.Printf("Total files size sum: %d.%d MB\n", mb, kb)
-	fmt.Printf("Time taken: %v\n", time.Since(start))
+	//
+	// dupcnt := 0
+	// foundAny := false
+	// hashMap.Range(func(key, value any) bool {
+	// 	ss, ok := value.(*safeSlice)
+	// 	if !ok || len(ss.paths) <= 1 {
+	// 		return true
+	// 	}
+	//
+	// 	dupcnt++
+	// 	if !foundAny {
+	// 		fmt.Println("Duplicate files found:")
+	// 		foundAny = true
+	// 	}
+	// 	fmt.Printf("\nHash: %s\n", key)
+	// 	for _, p := range ss.paths {
+	// 		fmt.Printf("  %s\n", p)
+	// 	}
+	// 	return true
+	// })
+	//
+	// if !foundAny {
+	// 	fmt.Println("All files are unique")
+	// }
+	//
+	// mb := sz.Load() / 1024 / 1024
+	// kb := sz.Load()/1024 - mb*1024
+	// fmt.Println("Duplicate files:", dupcnt)
+	// fmt.Printf("File scanned: %d\n", ops.Load())
+	// fmt.Printf("Total files size sum: %d.%d MB\n", mb, kb)
 	return nil
 }
 
 func walk(root string, m *sync.Map, ops, sz *atomic.Uint64) error {
 	// it could be via config, but i am kinda lazy
 	ignoreDirs := map[string]bool{
-		".git":         true,
-		".venv":        true,
-		"venv":         true,
-		"node_modules": true,
-		"__pycache__":  true,
-		".idea":        true,
-		".vscode":      true,
-		".cache":       true,
-		".cargo":       true,
-		".config":      true,
-		".docker":      true,
-		".local":       true,
-		".rustup":      true,
-		".themes":      true,
-		"target":       true,
-		"go":           true,
-		"build":        true,
-		"dist":         true,
-		"vendor":       true,
+		// ".git":         true,
+		// ".venv":        true,
+		// "venv":         true,
+		// "node_modules": true,
+		// "__pycache__":  true,
+		// ".idea":        true,
+		// ".vscode":      true,
+		// ".cache":       true,
+		// ".cargo":       true,
+		// ".config":      true,
+		// ".docker":      true,
+		// ".local": true,
+		// ".rustup":      true,
+		// ".themes":      true,
+		// "target":       true,
+		// "go":           true,
+		// "build":        true,
+		// "dist":         true,
+		// "vendor":       true,
 	}
 	return filepath.Walk(root, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
